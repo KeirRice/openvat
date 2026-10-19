@@ -671,6 +671,50 @@ def export_vat_model(file_format='FBX', include_materials=False, include_tangent
     print(f"Exported {obj.name} to {export_path} as {file_format.upper()}")
 
 
+def add_normal_safe_split(nodes, links):
+    # Split edges that are marked sharp or border a flat-shaded face
+    edge_smooth = nodes.new("GeometryNodeInputEdgeSmooth")
+    edge_smooth.location = (400, -200)
+
+    edge_sharp = nodes.new("FunctionNodeBooleanMath")
+    edge_sharp.operation = 'NOT'
+    edge_sharp.location = (600, -200)
+    links.new(edge_smooth.outputs[0], edge_sharp.inputs[0])
+
+    face_smooth = nodes.new("GeometryNodeInputShadeSmooth")
+    face_smooth.location = (0, -400)
+
+    face_flat = nodes.new("FunctionNodeBooleanMath")
+    face_flat.operation = 'NOT'
+    face_flat.location = (200, -400)
+    links.new(face_smooth.outputs[0], face_flat.inputs[0])
+
+    # Average of adjacent faces' flatness > 0 means at least one is flat
+    flat_on_edge = nodes.new("GeometryNodeFieldOnDomain")
+    flat_on_edge.domain = 'EDGE'
+    flat_on_edge.data_type = 'FLOAT'
+    flat_on_edge.location = (400, -400)
+    links.new(face_flat.outputs[0], flat_on_edge.inputs[0])
+
+    borders_flat = nodes.new("FunctionNodeCompare")
+    borders_flat.data_type = 'FLOAT'
+    borders_flat.operation = 'GREATER_THAN'
+    borders_flat.inputs[1].default_value = 0.0
+    borders_flat.location = (600, -400)
+    links.new(flat_on_edge.outputs[0], borders_flat.inputs[0])
+
+    selection = nodes.new("FunctionNodeBooleanMath")
+    selection.operation = 'OR'
+    selection.location = (800, -300)
+    links.new(edge_sharp.outputs[0], selection.inputs[0])
+    links.new(borders_flat.outputs[0], selection.inputs[1])
+
+    split_node = nodes.new("GeometryNodeSplitEdges")
+    split_node.location = (1000, 0)
+    links.new(selection.outputs[0], split_node.inputs["Selection"])
+    return split_node
+
+
 def create_geo_nodes_bake(use_collection=False, collection_name=""):
     context = bpy.context
     scene = context.scene
@@ -708,10 +752,7 @@ def create_geo_nodes_bake(use_collection=False, collection_name=""):
     )
 
     output_node = nodes.new("NodeGroupOutput")
-    output_node.location = (600, 0)
-    output_node.is_active_output = True
-    output_node = nodes.new("NodeGroupOutput")
-    output_node.location = (600, 0)
+    output_node.location = (1200, 0)
     output_node.is_active_output = True
 
     realize_node = nodes.new("GeometryNodeRealizeInstances")
@@ -740,7 +781,14 @@ def create_geo_nodes_bake(use_collection=False, collection_name=""):
     source_node.location = (0, 0)
 
     # Link nodes
-    links.new(realize_node.outputs["Geometry"], output_node.inputs["Geometry"])  # ← this now works
+    if vat_settings.vat_normal_encoding != 'NONE' and vat_settings.rip_edges:
+        # Normal-Safe Edges: split inside the tree so the live output, the baked
+        # mesh and the proxy all share the same split topology
+        split_node = add_normal_safe_split(nodes, links)
+        links.new(realize_node.outputs["Geometry"], split_node.inputs["Mesh"])
+        links.new(split_node.outputs["Mesh"], output_node.inputs["Geometry"])
+    else:
+        links.new(realize_node.outputs["Geometry"], output_node.inputs["Geometry"])
 
     # Deselect all, activate new object
     bpy.ops.object.select_all(action='DESELECT')
