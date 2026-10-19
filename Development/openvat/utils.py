@@ -346,6 +346,15 @@ def get_virtual_ripped_vertex_count(obj):
 
 # Best working approximations for output size based on realized data available
 
+# VAT_UV addresses one texel per vertex. Engines may store UVs as 16-bit floats
+# (Unreal without Full Precision UVs, Unity with Vertex Compression); above this
+# size a half float can no longer hold texel centres safely and vertices read
+# their neighbour's data.
+HALF_PRECISION_UV_MAX_SIZE = 1024
+
+def needs_full_precision_uvs(width, height):
+    return max(width, height) > HALF_PRECISION_UV_MAX_SIZE
+
 def calculate_optimal_vat_resolution(num_vertices, num_frames):
     def next_power_of_2(x):
         return 1 if x <= 1 else 2**math.ceil(math.log2(x))

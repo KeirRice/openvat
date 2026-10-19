@@ -268,6 +268,12 @@ class OBJECT_PT_VAT_OUTPUT(bpy.types.Panel):
                 if settings.use_single_row:
                     row = box.row()
                     row.label(text="Single Row Mode Enabled", icon='SEQ_LUMA_WAVEFORM')
+                check_w, check_h = (maxwidth, maxheight) if use_range else (width, height)
+                if utils.needs_full_precision_uvs(check_w, check_h):
+                    col = box.column(align=True)
+                    col.alert = True
+                    col.label(text=f"Over {utils.HALF_PRECISION_UV_MAX_SIZE} px: needs full-precision UVs in engine", icon='ERROR')
+                    col.label(text="Unreal: Use Full Precision UVs. Unity: no TexCoord vertex compression")
             else:
                 row = box.row()
                 row.label(text="Resolution calculated per batch object", icon="OUTLINER_OB_IMAGE")

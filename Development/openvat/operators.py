@@ -226,6 +226,14 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
             else:
                 width, height, num_wraps = utils.calculate_optimal_vat_resolution(num_vertices, num_frames)   
         
+        uv_precision_warning = None
+        if utils.needs_full_precision_uvs(width, height):
+            uv_precision_warning = (
+                f"VAT is {width} x {height}: larger than {utils.HALF_PRECISION_UV_MAX_SIZE} px needs "
+                "full-precision UVs in engine (Unreal: Use Full Precision UVs, Unity: no TexCoord vertex compression)"
+            )
+            print("WARNING:", uv_precision_warning)
+
         # Store name for use after obj is deleted
         obj_name = obj.name
         
@@ -242,7 +250,10 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
             bpy.ops.outliner.orphans_purge()
         
         # Finish
-        self.report({'INFO'}, "VAT Encoding Completed")
+        if uv_precision_warning:
+            self.report({'WARNING'}, uv_precision_warning)
+        else:
+            self.report({'INFO'}, "VAT Encoding Completed")
         print("VAT Encoding Finished")
         print("Thank you for using OPENVAT - Your favorite Vertex Animation Encoder - Developed by Luke Stilson 2024 - Visit www.lukestilson.com for more information")
     
