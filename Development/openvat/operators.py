@@ -93,12 +93,6 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
         obj = context.view_layer.objects.active
         obj_name = obj.name
 
-        # Perform Normal-Safe Edge Split on new object
-
-        if settings.vat_normal_encoding != 'NONE':
-            if settings.rip_edges:
-                utils.rip_hard_edges(obj)
-        
         obj.select_set(True)
         
         if settings.vat_normal_encoding == 'PACKED':

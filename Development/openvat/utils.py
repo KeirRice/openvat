@@ -3,7 +3,6 @@
 import bpy
 import json
 import math
-import bmesh
 import os
 
 NODE_GROUPS_BLEND_FILE = os.path.join(os.path.dirname(__file__), "vat_node_groups.blend")
@@ -422,52 +421,6 @@ def calculate_packed_vat_resolution(num_vertices, num_frames):
 
  
  
-def rip_hard_edges(obj):
-    if not obj or obj.type != 'MESH':
-        raise Exception("Active object must be a mesh")
-
-    mesh = obj.data
-
-    depsgraph = bpy.context.evaluated_depsgraph_get() # Gets evaluated edges post-modifiers
-    eval_obj = obj.evaluated_get(depsgraph)
-    eval_mesh = eval_obj.to_mesh()
-
-    sharp_edge_indices = {
-        i for i, e in enumerate(eval_mesh.edges)
-        if e.use_edge_sharp
-    }
-    eval_obj.to_mesh_clear()
-
-    if obj.mode != 'OBJECT':
-        bpy.ops.object.mode_set(mode='OBJECT')
-
-    bm = bmesh.new()
-    bm.from_mesh(mesh)
-    bm.edges.ensure_lookup_table()
-    bm.faces.ensure_lookup_table()
-
-    edges_to_split = []
-    for i, e in enumerate(bm.edges):
-        if i in sharp_edge_indices:
-            edges_to_split.append(e)
-            continue
-
-        if not e.smooth:
-            edges_to_split.append(e)
-            continue
-
-        linked_faces = e.link_faces
-        if len(linked_faces) == 2:
-            if not linked_faces[0].smooth and not linked_faces[1].smooth:
-                edges_to_split.append(e)
-
-    # Perform Edge Split
-    bmesh.ops.split_edges(bm, edges=edges_to_split)
-
-    bm.to_mesh(mesh)
-    bm.free()
-    mesh.update()  
-    
 def get_point_attributes_filtered(self, context, data_type_filter=None):
     items = []
     obj = context.active_object
