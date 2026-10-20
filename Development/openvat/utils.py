@@ -155,6 +155,9 @@ def make_remap_data(obj_name, attribute_name, frame_start, frame_end, output_fil
             }
     }
     
+    # Coordinate frame of the data ("blender" or "unity"), so importers know what to expect
+    remap_info["space"] = bpy.context.scene.vat_settings.engine_space.lower()
+
     # Write the remap info
     write_json(remap_info, remap_output_filepath)
     print(f"Remap information saved to {remap_output_filepath}")

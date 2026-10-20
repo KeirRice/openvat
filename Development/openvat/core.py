@@ -2,8 +2,13 @@
 
 import bpy
 import bmesh
+import math
 import os
 from . import utils
+
+# Rotation from Blender's Z-up frame into Unity's Y-up frame: (x, y, z) -> (x, z, -y).
+# This matches the FBX exporter's -Z forward / Y up axis conversion.
+UNITY_SPACE_ROTATION = (-math.pi / 2, 0.0, 0.0)
 
 def get_scene_compositor_tree(scene: bpy.types.Scene, ensure: bool = True, name: str | None = None):
     
@@ -270,7 +275,11 @@ def setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_
     bpy.ops.object.editmode_toggle()
     bpy.ops.object.editmode_toggle()
     vat_obj.name = obj.name.replace("_ovbake", "_vat")
-    
+    if settings.engine_space == 'UNITY':
+        # The mesh is in Unity space; this rotation shows the preview upright in Blender
+        # and cancels the FBX exporter's -Z forward / Y up root rotation
+        vat_obj.rotation_euler = tuple(-angle for angle in UNITY_SPACE_ROTATION)
+
     # Move to OpenVATPreview collection
     vat_coll = bpy.data.collections.get("OpenVATPreview")
     if not vat_coll:
@@ -633,6 +642,8 @@ def export_vat_model(file_format='FBX', include_materials=False, include_tangent
             use_active_collection=False,
             global_scale=1.0,
             apply_unit_scale=True,
+            # Unity space bakes units into the data so the root imports at scale 1
+            apply_scale_options='FBX_SCALE_ALL' if bpy.context.scene.vat_settings.engine_space == 'UNITY' else 'FBX_SCALE_NONE',
             bake_space_transform=False,
             object_types={'MESH'},
             use_mesh_modifiers=False,
@@ -781,14 +792,24 @@ def create_geo_nodes_bake(use_collection=False, collection_name=""):
     source_node.location = (0, 0)
 
     # Link nodes
+    geometry_out = realize_node.outputs["Geometry"]
     if vat_settings.vat_normal_encoding != 'NONE' and vat_settings.rip_edges:
         # Normal-Safe Edges: split inside the tree so the live output, the baked
         # mesh and the proxy all share the same split topology
         split_node = add_normal_safe_split(nodes, links)
-        links.new(realize_node.outputs["Geometry"], split_node.inputs["Mesh"])
-        links.new(split_node.outputs["Mesh"], output_node.inputs["Geometry"])
-    else:
-        links.new(realize_node.outputs["Geometry"], output_node.inputs["Geometry"])
+        links.new(geometry_out, split_node.inputs["Mesh"])
+        geometry_out = split_node.outputs["Mesh"]
+
+    if vat_settings.engine_space == 'UNITY':
+        # Convert to Unity space here so positions, normals, the remap range and
+        # the exported mesh are all written in the same Y-up frame
+        space_node = nodes.new("GeometryNodeTransform")
+        space_node.location = (1100, 200)
+        space_node.inputs["Rotation"].default_value = UNITY_SPACE_ROTATION
+        links.new(geometry_out, space_node.inputs["Geometry"])
+        geometry_out = space_node.outputs["Geometry"]
+
+    links.new(geometry_out, output_node.inputs["Geometry"])
 
     # Deselect all, activate new object
     bpy.ops.object.select_all(action='DESELECT')

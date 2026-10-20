@@ -198,6 +198,8 @@ class OBJECT_PT_VAT_OUTPUT(bpy.types.Panel):
         if settings.export_mesh:
             grid.label(text="Model Format")
             grid.prop(settings, "mesh_format", text="")
+        grid.label(text="Engine Space")
+        grid.prop(settings, "engine_space", text="")
         grid.label(text="Image Format")
         grid.prop(settings, "image_format", text="")
         row = layout.row()

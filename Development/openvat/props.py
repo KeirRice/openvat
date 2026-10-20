@@ -137,6 +137,16 @@ class VATSettings(bpy.types.PropertyGroup):
         ],
         default='FBX'
     )
+
+    engine_space: bpy.props.EnumProperty(
+        name="Engine Space",
+        description="Coordinate frame the VAT data and exported model are written in",
+        items=[
+            ('BLENDER', "Blender", "Z-up Blender space. The engine converts on import (Unity: root rotated -90 on X, scale 100)"),
+            ('UNITY', "Unity", "Y-up Unity space at scale 1. The FBX imports into Unity with an identity root transform and matches Blender's view"),
+        ],
+        default='BLENDER'
+    )
     
     use_transform: bpy.props.BoolProperty(
         name="Bake World Transform",
