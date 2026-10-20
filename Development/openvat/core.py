@@ -3,12 +3,17 @@
 import bpy
 import bmesh
 import math
+import mathutils
 import os
 from . import utils
 
-# Rotation from Blender's Z-up frame into Unity's Y-up frame: (x, y, z) -> (x, z, -y).
-# This matches the FBX exporter's -Z forward / Y up axis conversion.
-UNITY_SPACE_ROTATION = (-math.pi / 2, 0.0, 0.0)
+# Rotation from Blender's Z-up frame into the FBX data frame for Unity space:
+# (x, y, z) -> (-x, z, y). Unity negates X on FBX import, so the asset lands in Unity as
+# (x, z, y): Blender's front view (looking along +Y) matches Unity's default view (along +Z).
+UNITY_SPACE_ROTATION = (math.pi / 2, 0.0, math.pi)
+# Object rotation that cancels the FBX exporter's -Z forward / Y up root rotation, so the
+# Unity root imports with an identity rotation
+UNITY_SPACE_FBX_ROOT_ROTATION = (math.pi / 2, 0.0, 0.0)
 
 def get_scene_compositor_tree(scene: bpy.types.Scene, ensure: bool = True, name: str | None = None):
     
@@ -276,9 +281,8 @@ def setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_
     bpy.ops.object.editmode_toggle()
     vat_obj.name = obj.name.replace("_ovbake", "_vat")
     if settings.engine_space == 'UNITY':
-        # The mesh is in Unity space; this rotation shows the preview upright in Blender
-        # and cancels the FBX exporter's -Z forward / Y up root rotation
-        vat_obj.rotation_euler = tuple(-angle for angle in UNITY_SPACE_ROTATION)
+        # The mesh is in Unity space; undo that rotation so the preview matches the source
+        vat_obj.rotation_euler = mathutils.Euler(UNITY_SPACE_ROTATION).to_matrix().inverted().to_euler()
 
     # Move to OpenVATPreview collection
     vat_coll = bpy.data.collections.get("OpenVATPreview")
@@ -635,6 +639,11 @@ def export_vat_model(file_format='FBX', include_materials=False, include_tangent
     export_ext = 'fbx' if file_format.upper() == 'FBX' else 'glb' if file_format.upper() == 'GLB' else 'gltf'
     export_path = os.path.join(object_directory, f"{export_name}.{export_ext}")
 
+    unity_space = bpy.context.scene.vat_settings.engine_space == 'UNITY'
+    preview_rotation = obj.rotation_euler.copy()
+    if unity_space and file_format.upper() == 'FBX':
+        obj.rotation_euler = UNITY_SPACE_FBX_ROOT_ROTATION
+
     if file_format.upper() == 'FBX':
         bpy.ops.export_scene.fbx(
             filepath=export_path,
@@ -643,7 +652,7 @@ def export_vat_model(file_format='FBX', include_materials=False, include_tangent
             global_scale=1.0,
             apply_unit_scale=True,
             # Unity space bakes units into the data so the root imports at scale 1
-            apply_scale_options='FBX_SCALE_ALL' if bpy.context.scene.vat_settings.engine_space == 'UNITY' else 'FBX_SCALE_NONE',
+            apply_scale_options='FBX_SCALE_ALL' if unity_space else 'FBX_SCALE_NONE',
             bake_space_transform=False,
             object_types={'MESH'},
             use_mesh_modifiers=False,
@@ -657,6 +666,7 @@ def export_vat_model(file_format='FBX', include_materials=False, include_tangent
             path_mode='COPY' if include_materials else 'STRIP',
             embed_textures=include_materials
         )
+        obj.rotation_euler = preview_rotation
 
     elif file_format.upper() in {'GLB', 'GLTF'}:
         bpy.ops.export_scene.gltf(

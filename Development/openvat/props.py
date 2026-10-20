@@ -143,7 +143,7 @@ class VATSettings(bpy.types.PropertyGroup):
         description="Coordinate frame the VAT data and exported model are written in",
         items=[
             ('BLENDER', "Blender", "Z-up Blender space. The engine converts on import (Unity: root rotated -90 on X, scale 100)"),
-            ('UNITY', "Unity", "Y-up Unity space at scale 1. The FBX imports into Unity with an identity root transform and matches Blender's view"),
+            ('UNITY', "Unity", "Y-up Unity space at scale 1. The FBX imports into Unity with an identity root, and Blender's front view matches Unity's default view (Blender X, Z, Y become Unity X, Y, Z)"),
         ],
         default='BLENDER'
     )
