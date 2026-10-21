@@ -53,6 +53,9 @@ class OBJECT_PT_VAT_OPTIONS(bpy.types.Panel):
             row.label(text="Vertex Normals", icon='NORMALS_VERTEX')
             row = layout.row()
             row.prop(settings, "vat_normal_encoding", text="")
+            if settings.vat_normal_encoding != 'NONE':
+                row = layout.row()
+                row.prop(settings, "relative_normals", toggle=True)
 
             layout.separator()
             row = layout.row()
@@ -204,6 +207,7 @@ class OBJECT_PT_VAT_OUTPUT(bpy.types.Panel):
         grid.prop(settings, "image_format", text="")
         row = layout.row()
         row.prop(settings, "use_single_row", toggle=True)
+        row.prop(settings, "share_columns", toggle=True)
         if settings.image_format == 'EXR32':
             row = layout.row()
             row.prop(settings, "no_remap", text="Use Absolute Values", toggle=True)
@@ -270,6 +274,9 @@ class OBJECT_PT_VAT_OUTPUT(bpy.types.Panel):
                 if settings.use_single_row:
                     row = box.row()
                     row.label(text="Single Row Mode Enabled", icon='SEQ_LUMA_WAVEFORM')
+                if settings.share_columns:
+                    row = box.row()
+                    row.label(text="Shared columns can shrink this at encode time", icon='AUTOMERGE_ON')
                 check_w, check_h = (maxwidth, maxheight) if use_range else (width, height)
                 if utils.needs_full_precision_uvs(check_w, check_h):
                     col = box.column(align=True)

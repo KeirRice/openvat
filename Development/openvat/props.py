@@ -193,6 +193,18 @@ class VATSettings(bpy.types.PropertyGroup):
         default='PACKED'
     )
     
+    relative_normals: bpy.props.BoolProperty(
+        name="Relative Normals",
+        description="Store each normal as an offset from the exported mesh's own normal, so static vertices encode zero and can share a column. The engine shader must support relative normals (OpenVAT Unity package, Blender preview)",
+        default=False
+    )
+
+    share_columns: bpy.props.BoolProperty(
+        name="Share Identical Columns",
+        description="Vertices whose encoded data is identical in every frame share one texture column, shrinking the VAT. Lossless at the chosen image format and needs no engine changes",
+        default=True
+    )
+
     use_single_row: bpy.props.BoolProperty(
         name="Use Single Row",
         description="Width of VAT in pixels becomes vertex count, height of VAT becomes frame count (exact)",

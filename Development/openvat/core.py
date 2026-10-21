@@ -142,13 +142,19 @@ def create_uv_map(obj, screen_width, screen_height, frames):
     num_verts = len(sorted_verts)
     pixel_size_x = 1.0 / screen_width
     pixel_size_y = 1.0 / screen_height
+    # Written by ov_sort-by-column when vertices share columns
+    column_layer = bm.verts.layers.int.get("ov_column")
 
     for i, vert in enumerate(sorted_verts):
-        uv_x = (i % screen_width) / screen_width + pixel_size_x / 2
-        uv_y = 1.0 - ((i // screen_width) * frames) / screen_height - pixel_size_y / 2
+        slot = vert[column_layer] if column_layer is not None else i
+        uv_x = (slot % screen_width) / screen_width + pixel_size_x / 2
+        uv_y = 1.0 - ((slot // screen_width) * frames) / screen_height - pixel_size_y / 2
 
         for loop in vert.link_loops:
             loop[uv_layer].uv = (uv_x, uv_y)
+
+    if column_layer is not None:
+        bm.verts.layers.int.remove(column_layer)
 
     bmesh.update_edit_mesh(obj.data)
     bpy.ops.object.mode_set(mode='OBJECT')
@@ -160,6 +166,293 @@ def get_max_y(res_x, res_y, ortho_scale=10.0):
         return ortho_scale / aspect / 2
     else:
         return ortho_scale / 2
+
+COLUMN_SORT_GROUP = "ov_sort-by-column"
+
+def get_socket_identifier(node_group, name):
+    return node_group.interface.items_tree[name].identifier
+
+def get_socket(sockets, identifier):
+    return next(socket for socket in sockets if socket.identifier == identifier)
+
+def ensure_column_sort_group():
+    # Reorders vertices so one representative per shared column sits where the encoder reads
+    # it, and tags every vertex with its column for create_uv_map
+    group = bpy.data.node_groups.get(COLUMN_SORT_GROUP)
+    if group:
+        return group
+
+    group = bpy.data.node_groups.new(COLUMN_SORT_GROUP, 'GeometryNodeTree')
+    group.interface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+    group.interface.new_socket(name="Column Table", in_out='INPUT', socket_type='NodeSocketObject')
+    group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    nodes = group.nodes
+    links = group.links
+
+    group_in = nodes.new("NodeGroupInput")
+    group_out = nodes.new("NodeGroupOutput")
+    group_out.location = (1000, 0)
+    table = nodes.new("GeometryNodeObjectInfo")
+    table.location = (0, -300)
+    links.new(group_in.outputs["Column Table"], table.inputs["Object"])
+    index = nodes.new("GeometryNodeInputIndex")
+    index.location = (200, -500)
+
+    def sample_table(attribute_name, data_type, y):
+        attribute = nodes.new("GeometryNodeInputNamedAttribute")
+        attribute.data_type = data_type
+        attribute.inputs["Name"].default_value = attribute_name
+        attribute.location = (200, y)
+        sample = nodes.new("GeometryNodeSampleIndex")
+        sample.data_type = data_type
+        sample.domain = 'POINT'
+        sample.location = (400, y)
+        links.new(table.outputs["Geometry"], sample.inputs["Geometry"])
+        links.new(attribute.outputs["Attribute"], sample.inputs["Value"])
+        links.new(index.outputs["Index"], sample.inputs["Index"])
+        return sample.outputs["Value"]
+
+    store = nodes.new("GeometryNodeStoreNamedAttribute")
+    store.data_type = 'INT'
+    store.domain = 'POINT'
+    store.inputs["Name"].default_value = "ov_column"
+    store.location = (600, 0)
+    links.new(group_in.outputs["Geometry"], store.inputs["Geometry"])
+    links.new(sample_table("ov_column", 'INT', -200), store.inputs["Value"])
+
+    sort = nodes.new("GeometryNodeSortElements")
+    sort.domain = 'POINT'
+    sort.location = (800, 0)
+    links.new(store.outputs["Geometry"], sort.inputs["Geometry"])
+    links.new(sample_table("ov_sort", 'FLOAT', -400), sort.inputs["Sort Weight"])
+    links.new(sort.outputs["Geometry"], group_out.inputs["Geometry"])
+    return group
+
+def add_column_sort(obj, column_table):
+    group = ensure_column_sort_group()
+    mod = obj.modifiers.new(name="ov_column_sort", type='NODES')
+    mod.node_group = group
+    utils.set_modifier_input(mod, get_socket_identifier(group, "Column Table"), column_table)
+    return mod
+
+def ensure_slot_limit(group):
+    # Patches the appended encoder once per file: drop the faces for slots at or past "Slots"
+    # (0 keeps all). With shared columns the vertices that reuse a column sit in those slots,
+    # and their faces would otherwise wrap into rows below, over packed normals
+    if "Slots" in group.interface.items_tree:
+        return
+
+    nodes = group.nodes
+    links = group.links
+    slot_store = nodes.get("Store Named Attribute.003")
+    if slot_store is None or slot_store.inputs["Name"].default_value != "vertFrame":
+        raise RuntimeError("ov_calculate-position-vs does not match the expected layout; cannot limit slots")
+
+    group.interface.new_socket(name="Slots", in_out='INPUT', socket_type='NodeSocketInt')
+
+    x, y = slot_store.location
+    group_in = nodes.new("NodeGroupInput")
+    group_in.location = (x, y - 500)
+    slot = nodes.new("GeometryNodeInputNamedAttribute")
+    slot.data_type = 'FLOAT'
+    slot.inputs["Name"].default_value = "vertFrame"
+    slot.location = (x, y - 350)
+    past_end = nodes.new("FunctionNodeCompare")
+    past_end.data_type = 'FLOAT'
+    past_end.operation = 'GREATER_EQUAL'
+    past_end.location = (x + 200, y - 350)
+    links.new(slot.outputs["Attribute"], past_end.inputs["A"])
+    links.new(group_in.outputs["Slots"], past_end.inputs["B"])
+    limited = nodes.new("FunctionNodeCompare")
+    limited.data_type = 'INT'
+    limited.operation = 'GREATER_THAN'
+    limited.location = (x + 200, y - 550)
+    links.new(group_in.outputs["Slots"], limited.inputs["A"])
+    drop = nodes.new("FunctionNodeBooleanMath")
+    drop.operation = 'AND'
+    drop.location = (x + 400, y - 400)
+    links.new(past_end.outputs["Result"], drop.inputs[0])
+    links.new(limited.outputs["Result"], drop.inputs[1])
+
+    delete = nodes.new("GeometryNodeDeleteGeometry")
+    delete.domain = 'FACE'
+    delete.location = (x + 600, y - 200)
+    for link in list(slot_store.outputs["Geometry"].links):
+        links.new(delete.outputs["Geometry"], link.to_socket)
+    links.new(slot_store.outputs["Geometry"], delete.inputs["Geometry"])
+    links.new(drop.outputs["Boolean"], delete.inputs["Selection"])
+
+def ensure_relative_normal_encoding(group):
+    # Patches the appended encoder once per file: optionally subtract the proxy's normal from the
+    # target's, and expose the normal remap range (defaults keep absolute normals unchanged)
+    if "RelativeNormals" in group.interface.items_tree:
+        return
+
+    nodes = group.nodes
+    links = group.links
+    target_normal = nodes.get("Sample Index.002")
+    remap = nodes.get("Map Range.001")
+    proxy_position = nodes.get("Object Info.002")
+    if target_normal is None or remap is None or proxy_position is None:
+        raise RuntimeError("ov_calculate-position-vs does not match the expected layout; cannot add relative normals")
+
+    group.interface.new_socket(name="RelativeNormals", in_out='INPUT', socket_type='NodeSocketBool')
+    normal_min = group.interface.new_socket(name="nrm_min", in_out='INPUT', socket_type='NodeSocketVector')
+    normal_min.default_value = (-1.0, -1.0, -1.0)
+    normal_max = group.interface.new_socket(name="nrm_max", in_out='INPUT', socket_type='NodeSocketVector')
+    normal_max.default_value = (1.0, 1.0, 1.0)
+
+    x, y = target_normal.location
+    group_in = nodes.new("NodeGroupInput")
+    group_in.location = (x - 400, y - 300)
+    proxy = nodes.new("GeometryNodeObjectInfo")
+    proxy.transform_space = proxy_position.transform_space
+    proxy.location = (x - 200, y - 300)
+    links.new(group_in.outputs["Proxy"], proxy.inputs["Object"])
+
+    normal = nodes.new("GeometryNodeInputNormal")
+    normal.location = (x - 200, y - 500)
+    proxy_normal = nodes.new("GeometryNodeSampleIndex")
+    proxy_normal.data_type = 'FLOAT_VECTOR'
+    proxy_normal.domain = 'POINT'
+    proxy_normal.location = (x, y - 300)
+    links.new(proxy.outputs["Geometry"], proxy_normal.inputs["Geometry"])
+    links.new(normal.outputs["Normal"], proxy_normal.inputs["Value"])
+    links.new(target_normal.inputs["Index"].links[0].from_socket, proxy_normal.inputs["Index"])
+
+    offset = nodes.new("ShaderNodeVectorMath")
+    offset.operation = 'SUBTRACT'
+    offset.location = (x + 200, y - 200)
+    links.new(target_normal.outputs["Value"], offset.inputs[0])
+    links.new(proxy_normal.outputs["Value"], offset.inputs[1])
+
+    switch = nodes.new("GeometryNodeSwitch")
+    switch.input_type = 'VECTOR'
+    switch.location = (x + 400, y - 100)
+    links.new(group_in.outputs["RelativeNormals"], switch.inputs["Switch"])
+    links.new(offset.outputs["Vector"], switch.inputs["True"])
+
+    for link in list(target_normal.outputs["Value"].links):
+        if link.to_node != offset:
+            links.new(switch.outputs["Output"], link.to_socket)
+    links.new(target_normal.outputs["Value"], switch.inputs["False"])
+
+    links.new(group_in.outputs["nrm_min"], get_socket(remap.inputs, "From_Min_FLOAT3"))
+    links.new(group_in.outputs["nrm_max"], get_socket(remap.inputs, "From_Max_FLOAT3"))
+
+def set_normal_encoding_inputs(mod, settings):
+    group = mod.node_group
+    relative = settings.relative_normals
+    low, high = utils.relative_normal_range(settings.image_format) if relative else (-1.0, 1.0)
+    utils.set_modifier_input(mod, get_socket_identifier(group, "RelativeNormals"), relative)
+    utils.set_modifier_input(mod, get_socket_identifier(group, "nrm_min"), (low,) * 3)
+    utils.set_modifier_input(mod, get_socket_identifier(group, "nrm_max"), (high,) * 3)
+
+def ensure_normal_preview(group):
+    # Patches the appended preview decoder once per file to decode VAT normals onto the mesh.
+    # Needs the Set Mesh Normal node; older Blender keeps the position-only preview
+    if "Decode Normals" in group.interface.items_tree or not hasattr(bpy.types, "GeometryNodeSetMeshNormal"):
+        return
+
+    nodes = group.nodes
+    links = group.links
+    set_position = nodes.get("Set Position.001")
+    position_sample = nodes.get("Image Texture")
+    if set_position is None or position_sample is None:
+        raise RuntimeError("ov_vat-decoder-vs does not match the expected layout; cannot add normal preview")
+    frame_uv = position_sample.inputs["Vector"].links[0].from_socket
+    geometry_link = set_position.inputs["Geometry"].links[0]
+    source_geometry = geometry_link.from_socket
+
+    group.interface.new_socket(name="Decode Normals", in_out='INPUT', socket_type='NodeSocketBool')
+    group.interface.new_socket(name="Normal Image", in_out='INPUT', socket_type='NodeSocketImage')
+    group.interface.new_socket(name="Normal V Offset", in_out='INPUT', socket_type='NodeSocketFloat')
+    group.interface.new_socket(name="RelativeNormals", in_out='INPUT', socket_type='NodeSocketBool')
+    normal_min = group.interface.new_socket(name="nrm_min", in_out='INPUT', socket_type='NodeSocketVector')
+    normal_min.default_value = (-1.0, -1.0, -1.0)
+    normal_max = group.interface.new_socket(name="nrm_max", in_out='INPUT', socket_type='NodeSocketVector')
+    normal_max.default_value = (1.0, 1.0, 1.0)
+
+    x, y = set_position.location
+    x -= 1400
+    y -= 600
+    group_in = nodes.new("NodeGroupInput")
+    group_in.location = (x, y)
+
+    # Packed normals sit below the positions in the same image
+    offset = nodes.new("ShaderNodeCombineXYZ")
+    offset.location = (x + 200, y - 200)
+    links.new(group_in.outputs["Normal V Offset"], offset.inputs["Y"])
+    normal_uv = nodes.new("ShaderNodeVectorMath")
+    normal_uv.operation = 'ADD'
+    normal_uv.location = (x + 400, y - 100)
+    links.new(frame_uv, normal_uv.inputs[0])
+    links.new(offset.outputs["Vector"], normal_uv.inputs[1])
+
+    sample = nodes.new("GeometryNodeImageTexture")
+    sample.interpolation = position_sample.interpolation
+    sample.extension = position_sample.extension
+    sample.location = (x + 600, y)
+    links.new(group_in.outputs["Normal Image"], sample.inputs["Image"])
+    links.new(normal_uv.outputs["Vector"], sample.inputs["Vector"])
+
+    decode = nodes.new("ShaderNodeMapRange")
+    decode.data_type = 'FLOAT_VECTOR'
+    decode.clamp = False
+    decode.location = (x + 800, y)
+    links.new(sample.outputs["Color"], get_socket(decode.inputs, "Vector"))
+    links.new(group_in.outputs["nrm_min"], get_socket(decode.inputs, "To_Min_FLOAT3"))
+    links.new(group_in.outputs["nrm_max"], get_socket(decode.inputs, "To_Max_FLOAT3"))
+
+    # Relative normals are offsets from the mesh's own normal, read before Set Position moves it
+    rest_normal = nodes.new("GeometryNodeInputNormal")
+    rest_normal.location = (x + 800, y - 300)
+    restored = nodes.new("ShaderNodeVectorMath")
+    restored.operation = 'ADD'
+    restored.location = (x + 1000, y - 200)
+    links.new(get_socket(decode.outputs, "Vector"), restored.inputs[0])
+    links.new(rest_normal.outputs["Normal"], restored.inputs[1])
+    basis = nodes.new("GeometryNodeSwitch")
+    basis.input_type = 'VECTOR'
+    basis.location = (x + 1200, y - 100)
+    links.new(group_in.outputs["RelativeNormals"], basis.inputs["Switch"])
+    links.new(get_socket(decode.outputs, "Vector"), basis.inputs["False"])
+    links.new(restored.outputs["Vector"], basis.inputs["True"])
+    normalized = nodes.new("ShaderNodeVectorMath")
+    normalized.operation = 'NORMALIZE'
+    normalized.location = (x + 1400, y - 100)
+    links.new(basis.outputs["Output"], normalized.inputs[0])
+
+    set_normal = nodes.new("GeometryNodeSetMeshNormal")
+    set_normal.mode = 'FREE'
+    set_normal.domain = 'POINT'
+    set_normal.location = (x + 1600, y + 100)
+    links.new(source_geometry, set_normal.inputs["Mesh"])
+    links.new(normalized.outputs["Vector"], set_normal.inputs["Custom Normal"])
+
+    use_normals = nodes.new("GeometryNodeSwitch")
+    use_normals.input_type = 'GEOMETRY'
+    use_normals.location = (x + 1800, y + 200)
+    links.new(group_in.outputs["Decode Normals"], use_normals.inputs["Switch"])
+    links.new(source_geometry, use_normals.inputs["False"])
+    links.new(set_normal.outputs["Mesh"], use_normals.inputs["True"])
+    links.new(use_normals.outputs["Output"], set_position.inputs["Geometry"])
+
+def set_normal_preview_inputs(mod, settings, position_image, normal_image):
+    group = mod.node_group
+    if "Decode Normals" not in group.interface.items_tree:
+        return
+    decode = settings.encode_type == 'DEFAULT' and settings.vat_normal_encoding != 'NONE' and normal_image is not None
+    relative = decode and settings.relative_normals
+    low, high = utils.relative_normal_range(settings.image_format) if relative else (-1.0, 1.0)
+    utils.set_modifier_input(mod, get_socket_identifier(group, "Decode Normals"), decode)
+    if decode:
+        utils.set_modifier_input(mod, get_socket_identifier(group, "Normal Image"), normal_image)
+    utils.set_modifier_input(mod, get_socket_identifier(group, "Normal V Offset"),
+                             -0.5 if normal_image is position_image else 0.0)
+    utils.set_modifier_input(mod, get_socket_identifier(group, "RelativeNormals"), relative)
+    utils.set_modifier_input(mod, get_socket_identifier(group, "nrm_min"), (low,) * 3)
+    utils.set_modifier_input(mod, get_socket_identifier(group, "nrm_max"), (high,) * 3)
 
 # The bulk of the encoding computation happens within an appended geometry node group - The following code defines properties to set up the geometry nodes to capture data
 def setup_vat_tracker(vat_scene, obj_name, num_frames, width, height, num_wraps, proxy_name, original_scene, nodegroup_method, pack_normals, use_custom, custom_attribute, custom_remap):
@@ -189,6 +482,9 @@ def setup_vat_tracker(vat_scene, obj_name, num_frames, width, height, num_wraps,
     utils.set_modifier_input(mod, "Socket_14", original_scene['min_z'])
     utils.set_modifier_input(mod, "Socket_15", original_scene['max_z'])
     utils.set_modifier_input(mod, "Socket_19", vat_scene.frame_start)
+    utils.set_modifier_input(mod, get_socket_identifier(mod.node_group, "Slots"), original_scene.get('ov_columns', 0))
+    if not use_custom:
+        set_normal_encoding_inputs(mod, original_scene.vat_settings)
 
 
     if use_custom:
@@ -209,7 +505,7 @@ def setup_vat_tracker(vat_scene, obj_name, num_frames, width, height, num_wraps,
                 utils.set_modifier_input(normal_mod, "Socket_17", True)
         
         
-def setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_normals, framestart):
+def setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_normals, framestart, column_table=None):
     original_scene = bpy.context.scene
     settings = original_scene.vat_settings
     
@@ -232,6 +528,9 @@ def setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_
 
     for modifier in proxy_obj.modifiers[:]:
         utils.apply_modifier(proxy_obj, modifier)
+    if column_table is not None:
+        # Applied on its own: apply_modifier evaluates the whole remaining stack
+        utils.apply_modifier(proxy_obj, add_column_sort(proxy_obj, column_table))
     
     bpy.ops.object.editmode_toggle()
     bpy.ops.object.editmode_toggle()
@@ -276,6 +575,11 @@ def setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_
     utils.set_modifier_input(mod, "Socket_12", original_scene['min_z'])
     utils.set_modifier_input(mod, "Socket_13", original_scene['max_z'])
     utils.set_modifier_input(mod, "Socket_14", original_scene.frame_start)
+    if settings.vat_normal_encoding == 'PACKED':
+        normal_image = image_result
+    else:
+        normal_image = bpy.data.images.get(obj.name.replace("_ovbake", "") + "_vnrm" + image_extension)
+    set_normal_preview_inputs(mod, settings, image_result, normal_image)
 
     bpy.ops.object.editmode_toggle()
     bpy.ops.object.editmode_toggle()

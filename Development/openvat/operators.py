@@ -143,6 +143,9 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
         utils.ensure_node_group("ov_generated-pos")
         utils.ensure_node_group("ov_vat-decoder-vs")
         utils.ensure_node_group("ov_calculate-position-vs")
+        core.ensure_slot_limit(bpy.data.node_groups["ov_calculate-position-vs"])
+        core.ensure_relative_normal_encoding(bpy.data.node_groups["ov_calculate-position-vs"])
+        core.ensure_normal_preview(bpy.data.node_groups["ov_vat-decoder-vs"])
         
         bpy.ops.object.select_all(action='DESELECT')
         context.view_layer.objects.active = obj # ensure new generated mesh is active
@@ -194,6 +197,27 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
         frame_start = context.scene.frame_start
         frame_end = context.scene.frame_end
         num_frames = frame_end - frame_start + 1
+
+        if settings.encode_type == 'DEFAULT' and settings.vat_normal_encoding != 'NONE':
+            relative = settings.relative_normals
+            low, high = utils.relative_normal_range(settings.image_format) if relative else (-1.0, 1.0)
+            utils.update_remap_info(remap_output_filepath, {
+                "normals": {"Basis": "relative" if relative else "absolute", "Min": [low] * 3, "Max": [high] * 3}
+            })
+
+        # Vertices with identical data in every frame share a column; the encoder then only
+        # needs one representative per column, so the VAT is sized by column count
+        column_table = None
+        context.scene['ov_columns'] = 0
+        if settings.share_columns:
+            groups, num_columns = utils.compute_shared_columns(obj, temp_obj, frame_start, frame_end, settings)
+            print(f"Shared columns: {num_vertices} vertices use {num_columns} columns")
+            if num_columns < num_vertices:
+                columns, sort_keys = utils.layout_shared_columns(groups, num_columns)
+                column_table = utils.create_column_table(f"{obj_name}_ov_columns", columns, sort_keys)
+                core.add_column_sort(obj, column_table)
+                num_vertices = num_columns
+                context.scene['ov_columns'] = num_columns
         context.scene.frame_current = frame_start
         
         # Encode Normals
@@ -232,13 +256,15 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
         obj_name = obj.name
         
         # obj (temp) is deleted on success of the following
-        core.setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_normals, frame_start)
+        core.setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_normals, frame_start, column_table)
         
         # Clean up creation data
         if context.scene.vat_settings.vat_cleanup_enabled:
             print("Cleaning up temporary node_groups, objects, and modifiers")
             if custom_proxy == False:
                 bpy.data.objects.remove(temp_obj)
+            if column_table is not None:
+                bpy.data.objects.remove(column_table)
             bpy.data.scenes.remove(bpy.data.scenes[obj_name + "_proxy_scene"])
             bpy.data.scenes.remove(bpy.data.scenes[obj_name + "_vat"])
             bpy.ops.outliner.orphans_purge()

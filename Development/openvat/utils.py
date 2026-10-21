@@ -3,6 +3,7 @@
 import bpy
 import json
 import math
+import numpy as np
 import os
 
 NODE_GROUPS_BLEND_FILE = os.path.join(os.path.dirname(__file__), "vat_node_groups.blend")
@@ -369,6 +370,9 @@ def calculate_optimal_vat_resolution(num_vertices, num_frames):
 
     best = None
     best_area = float('inf')
+    # Few vertices (common with shared columns) may have no near-square size
+    fallback = None
+    fallback_area = float('inf')
 
     for width in powers_of_two():
         num_wraps = math.ceil(num_vertices / width)
@@ -378,15 +382,19 @@ def calculate_optimal_vat_resolution(num_vertices, num_frames):
         log2_width = math.log2(width)
         log2_height = math.log2(height)
 
+        area = width * height
+        if area < fallback_area:
+            fallback = (width, height, num_wraps)
+            fallback_area = area
+
         if abs(log2_width - log2_height) > 1:
             continue  # Skip if too far from square
 
-        area = width * height
         if area < best_area:
             best = (width, height, num_wraps)
             best_area = area
 
-    return best
+    return best or fallback
 
 
 def calculate_packed_vat_resolution(num_vertices, num_frames):
@@ -401,6 +409,9 @@ def calculate_packed_vat_resolution(num_vertices, num_frames):
 
     best = None
     best_area = float('inf')
+    # Few vertices (common with shared columns) may have no near-square size
+    fallback = None
+    fallback_area = float('inf')
 
     for width in powers_of_two():
         num_wraps = math.ceil(num_vertices / width)
@@ -412,15 +423,19 @@ def calculate_packed_vat_resolution(num_vertices, num_frames):
         log_w = math.log2(width)
         log_h = math.log2(total_height)
 
+        area = width * total_height
+        if area < fallback_area:
+            fallback = (width, total_height, num_wraps)
+            fallback_area = area
+
         if abs(log_w - log_h) > 1:
             continue
 
-        area = width * total_height
         if area < best_area:
             best = (width, total_height, num_wraps)
             best_area = area
 
-    return best
+    return best or fallback
 
  
  
@@ -468,3 +483,137 @@ _openvat_enum_cache = {
     "2": [("NONE", "None", "")],
     "3": [("NONE", "None", "")]
 }
+
+
+# Codes per channel for the integer image formats
+QUANTIZE_LEVELS = {'PNG8': 255, 'PNG16': 65535}
+
+def quantize_encoded(values, image_format):
+    """Quantize 0-1 encoded values to what the image stores, so equal results mean equal texels"""
+    values = np.clip(values, 0.0, 1.0)
+    if image_format in QUANTIZE_LEVELS:
+        return np.rint(values * QUANTIZE_LEVELS[image_format]).astype(np.int64)
+    # Adding zero folds -0.0 into 0.0 so both compare equal
+    if image_format == 'EXR16':
+        return (values.astype(np.float16) + np.float16(0)).view(np.uint16).astype(np.int64)
+    return (values.astype(np.float32) + np.float32(0)).view(np.uint32).astype(np.int64)
+
+def remap_to_unit(values, range_min, range_max):
+    """Match the encoder's Map Range: (v - min) / (max - min), zero where the range is empty"""
+    range_min = np.asarray(range_min, dtype=np.float64)
+    span = np.asarray(range_max, dtype=np.float64) - range_min
+    safe_span = np.where(span == 0.0, 1.0, span)
+    return np.where(span == 0.0, 0.0, (values - range_min) / safe_span)
+
+def relative_normal_range(image_format):
+    """Remap range for relative normals (offsets within -2..2) that stores a zero offset exactly.
+
+    Static vertices encode zero, so it must land on a code rather than between two; the range
+    is widened by a fraction of a step on the positive side to put zero on code (levels - 1) / 2.
+    """
+    if image_format in QUANTIZE_LEVELS:
+        levels = QUANTIZE_LEVELS[image_format]
+        step = 2.0 / ((levels - 1) // 2)
+        return -2.0, -2.0 + levels * step
+    return -2.0, 2.0
+
+def read_point_vectors(collection, count):
+    values = np.empty(count * 3, dtype=np.float32)
+    collection.foreach_get("vector", values)
+    return values.reshape(count, 3).astype(np.float64)
+
+def read_point_floats(mesh, attribute_name):
+    attr = mesh.attributes.get(attribute_name)
+    values = np.zeros(len(mesh.vertices), dtype=np.float32)
+    if attr is not None and attr.domain == 'POINT':
+        attr.data.foreach_get("value", values)
+    return values.astype(np.float64)
+
+def read_evaluated_frame(obj, settings, relative_basis):
+    """One frame of the data the encoder writes for each vertex, remapped to 0-1 per channel"""
+    scene = bpy.context.scene
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    mesh = obj.evaluated_get(depsgraph).data
+    count = len(mesh.vertices)
+
+    if settings.encode_type == 'CUSTOM':
+        custom = np.column_stack([
+            read_point_floats(mesh, name) for name in
+            (settings.custom_attr_1, settings.custom_attr_2, settings.custom_attr_3)
+        ])
+        return remap_to_unit(custom, (scene['min_x'], scene['min_y'], scene['min_z']),
+                             (scene['max_x'], scene['max_y'], scene['max_z']))
+
+    channels = [remap_to_unit(read_point_vectors(mesh.attributes["colPos"].data, count),
+                              (scene['min_x'], scene['min_y'], scene['min_z']),
+                              (scene['max_x'], scene['max_y'], scene['max_z']))]
+    if settings.vat_normal_encoding != 'NONE':
+        normals = read_point_vectors(mesh.vertex_normals, count)
+        if relative_basis is not None:
+            low, high = relative_normal_range(settings.image_format)
+            channels.append(remap_to_unit(normals - relative_basis, (low,) * 3, (high,) * 3))
+        else:
+            channels.append(remap_to_unit(normals, (-1.0,) * 3, (1.0,) * 3))
+    return np.column_stack(channels)
+
+def compute_shared_columns(obj, proxy_obj, frame_start, frame_end, settings):
+    """Group vertices whose encoded texels match in every frame.
+
+    Returns one group id per vertex and the group count. Each frame refines the grouping, so
+    only one frame of data is held at a time, and the pass stops once every vertex is unique.
+    """
+    relative_basis = None
+    if settings.relative_normals and settings.encode_type == 'DEFAULT' and settings.vat_normal_encoding != 'NONE':
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        proxy_mesh = proxy_obj.evaluated_get(depsgraph).data
+        relative_basis = read_point_vectors(proxy_mesh.vertex_normals, len(proxy_mesh.vertices))
+
+    groups = None
+    num_groups = 1
+    for frame in range(frame_start, frame_end + 1):
+        bpy.context.scene.frame_set(frame)
+        texels = quantize_encoded(read_evaluated_frame(obj, settings, relative_basis), settings.image_format)
+        if groups is None:
+            count = len(texels)
+            groups = np.zeros(count, dtype=np.int64)
+        elif len(texels) != count:
+            raise ValueError(f"Vertex count changes at frame {frame}; VAT needs constant topology")
+        _, groups = np.unique(np.column_stack((groups, texels)), axis=0, return_inverse=True)
+        groups = groups.reshape(-1)
+        num_groups = int(groups.max()) + 1
+        if num_groups == count:
+            break
+    return groups, num_groups
+
+def layout_shared_columns(groups, num_groups):
+    """Assign each group a column and build the vertex sort that feeds the encoder.
+
+    The encoder writes vertex index (count - 1 - slot) into slot, so sorting by the returned
+    keys puts one representative per group at the top indices, in column order, and moves the
+    vertices that reuse a column below them, where they land in slots no vertex reads.
+    """
+    count = len(groups)
+    representative = np.full(num_groups, -1, dtype=np.int64)
+    np.maximum.at(representative, groups, np.arange(count))
+    # Highest representative first keeps the layout close to the unshared one
+    column_of_group = np.empty(num_groups, dtype=np.int64)
+    column_of_group[np.argsort(-representative, kind='stable')] = np.arange(num_groups)
+
+    sort_keys = np.arange(count, dtype=np.float64) - count
+    sort_keys[representative] = num_groups - 1 - column_of_group
+    return column_of_group[groups], sort_keys
+
+def create_column_table(name, columns, sort_keys):
+    """Point cloud mesh holding each vertex's column and sort key, read by ov_sort-by-column"""
+    mesh = bpy.data.meshes.new(name)
+    mesh.vertices.add(len(columns))
+    mesh.attributes.new("ov_column", 'INT', 'POINT').data.foreach_set("value", columns.astype(np.int32))
+    mesh.attributes.new("ov_sort", 'FLOAT', 'POINT').data.foreach_set("value", sort_keys.astype(np.float32))
+    return bpy.data.objects.new(name, mesh)
+
+def update_remap_info(filepath, entries):
+    """Merge extra top-level entries into an existing remap_info JSON"""
+    with open(filepath, 'r') as f:
+        data = json.load(f)
+    data.update(entries)
+    write_json(data, filepath)
