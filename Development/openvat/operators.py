@@ -145,7 +145,9 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
         utils.ensure_node_group("ov_calculate-position-vs")
         core.ensure_slot_limit(bpy.data.node_groups["ov_calculate-position-vs"])
         core.ensure_relative_normal_encoding(bpy.data.node_groups["ov_calculate-position-vs"])
+        core.ensure_mirror_x_encoding(bpy.data.node_groups["ov_calculate-position-vs"])
         core.ensure_normal_preview(bpy.data.node_groups["ov_vat-decoder-vs"])
+        core.ensure_mirror_x_preview(bpy.data.node_groups["ov_vat-decoder-vs"])
         
         bpy.ops.object.select_all(action='DESELECT')
         context.view_layer.objects.active = obj # ensure new generated mesh is active
@@ -164,6 +166,8 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
             utils.make_remap_data(obj_name, attribute_name, frame_start, frame_end, output_filepath, remap_output_filepath,anim_list, "")
 
     
+            if utils.mirrors_x(settings):
+                utils.mirror_remap_x(remap_output_filepath, "os-remap")
             min_x, min_y, min_z, max_x, max_y, max_z = utils.read_remap_info(remap_output_filepath, attribute_name)
             context.scene['min_x'] = min_x
             context.scene['min_y'] = min_y

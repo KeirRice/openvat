@@ -327,6 +327,7 @@ def ensure_relative_normal_encoding(group):
     links.new(proxy_normal.outputs["Value"], offset.inputs[1])
 
     switch = nodes.new("GeometryNodeSwitch")
+    switch.name = "ov_normal_basis"
     switch.input_type = 'VECTOR'
     switch.location = (x + 400, y - 100)
     links.new(group_in.outputs["RelativeNormals"], switch.inputs["Switch"])
@@ -339,6 +340,62 @@ def ensure_relative_normal_encoding(group):
 
     links.new(group_in.outputs["nrm_min"], get_socket(remap.inputs, "From_Min_FLOAT3"))
     links.new(group_in.outputs["nrm_max"], get_socket(remap.inputs, "From_Max_FLOAT3"))
+
+def add_mirror_x_input(group, location):
+    # Group input "MirrorX" and a vector that is (-1, 1, 1) when it is set, else (1, 1, 1)
+    group.interface.new_socket(name="MirrorX", in_out='INPUT', socket_type='NodeSocketBool')
+    group_in = group.nodes.new("NodeGroupInput")
+    group_in.location = location
+    mirror = group.nodes.new("GeometryNodeSwitch")
+    mirror.input_type = 'VECTOR'
+    mirror.inputs["False"].default_value = (1.0, 1.0, 1.0)
+    mirror.inputs["True"].default_value = (-1.0, 1.0, 1.0)
+    mirror.location = (location[0] + 200, location[1])
+    group.links.new(group_in.outputs["MirrorX"], mirror.inputs["Switch"])
+    return mirror.outputs["Output"]
+
+def mirror_consumers(group, socket, mirror):
+    # Route everything reading socket through socket * mirror
+    multiply = group.nodes.new("ShaderNodeVectorMath")
+    multiply.operation = 'MULTIPLY'
+    multiply.location = (socket.node.location[0] + 200, socket.node.location[1] + 150)
+    for link in list(socket.links):
+        group.links.new(multiply.outputs["Vector"], link.to_socket)
+    group.links.new(socket, multiply.inputs[0])
+    group.links.new(mirror, multiply.inputs[1])
+
+def ensure_mirror_x_encoding(group):
+    # Patches the appended encoder once per file: optionally negate X of position offsets and
+    # normals. Unity space uses it to write VAT data directly in Unity's left-handed mesh frame
+    # (Unity mirrors the FBX mesh on import, but samples the VAT as stored)
+    if "MirrorX" in group.interface.items_tree:
+        return
+
+    offset = group.nodes.get("Vector Math")
+    normal = group.nodes.get("ov_normal_basis")
+    if offset is None or offset.operation != 'SUBTRACT' or normal is None:
+        raise RuntimeError("ov_calculate-position-vs does not match the expected layout; cannot mirror X")
+
+    mirror = add_mirror_x_input(group, (offset.location[0], offset.location[1] + 400))
+    mirror_consumers(group, offset.outputs["Vector"], mirror)
+    mirror_consumers(group, normal.outputs["Output"], mirror)
+
+def ensure_mirror_x_preview(group):
+    # Patches the appended preview decoder once per file: undo the encoder's MirrorX so the
+    # preview, which keeps the exported mesh's frame, decodes Unity-space data correctly
+    if "MirrorX" in group.interface.items_tree:
+        return
+
+    set_position = group.nodes.get("Set Position.001")
+    if set_position is None or not set_position.inputs["Offset"].is_linked:
+        raise RuntimeError("ov_vat-decoder-vs does not match the expected layout; cannot mirror X")
+
+    x, y = set_position.location
+    mirror = add_mirror_x_input(group, (x - 600, y + 400))
+    mirror_consumers(group, set_position.inputs["Offset"].links[0].from_socket, mirror)
+    normal = group.nodes.get("ov_normal_decode")
+    if normal is not None:
+        mirror_consumers(group, get_socket(normal.outputs, "Vector"), mirror)
 
 def set_normal_encoding_inputs(mod, settings):
     group = mod.node_group
@@ -397,6 +454,7 @@ def ensure_normal_preview(group):
     links.new(normal_uv.outputs["Vector"], sample.inputs["Vector"])
 
     decode = nodes.new("ShaderNodeMapRange")
+    decode.name = "ov_normal_decode"
     decode.data_type = 'FLOAT_VECTOR'
     decode.clamp = False
     decode.location = (x + 800, y)
@@ -483,6 +541,7 @@ def setup_vat_tracker(vat_scene, obj_name, num_frames, width, height, num_wraps,
     utils.set_modifier_input(mod, "Socket_15", original_scene['max_z'])
     utils.set_modifier_input(mod, "Socket_19", vat_scene.frame_start)
     utils.set_modifier_input(mod, get_socket_identifier(mod.node_group, "Slots"), original_scene.get('ov_columns', 0))
+    utils.set_modifier_input(mod, get_socket_identifier(mod.node_group, "MirrorX"), utils.mirrors_x(original_scene.vat_settings))
     if not use_custom:
         set_normal_encoding_inputs(mod, original_scene.vat_settings)
 
@@ -580,6 +639,7 @@ def setup_proxy_scene(obj, num_frames, width, height, num_wraps, temp_obj, pack_
     else:
         normal_image = bpy.data.images.get(obj.name.replace("_ovbake", "") + "_vnrm" + image_extension)
     set_normal_preview_inputs(mod, settings, image_result, normal_image)
+    utils.set_modifier_input(mod, get_socket_identifier(mod.node_group, "MirrorX"), utils.mirrors_x(settings))
 
     bpy.ops.object.editmode_toggle()
     bpy.ops.object.editmode_toggle()

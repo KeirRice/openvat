@@ -529,6 +529,19 @@ def read_point_floats(mesh, attribute_name):
         attr.data.foreach_get("value", values)
     return values.astype(np.float64)
 
+def mirrors_x(settings):
+    """Unity space writes position offsets and normals with X negated, in Unity's left-handed
+    mesh frame, so the engine samples them without flipping"""
+    return settings.engine_space == 'UNITY' and settings.encode_type == 'DEFAULT'
+
+def mirror_remap_x(filepath, key):
+    """Mirror a remap entry's X range to match X-mirrored data"""
+    with open(filepath, 'r') as f:
+        data = json.load(f)
+    entry = data[key]
+    entry["Min"][0], entry["Max"][0] = -entry["Max"][0], -entry["Min"][0]
+    write_json(data, filepath)
+
 def read_evaluated_frame(obj, settings, relative_basis):
     """One frame of the data the encoder writes for each vertex, remapped to 0-1 per channel"""
     scene = bpy.context.scene
@@ -544,16 +557,17 @@ def read_evaluated_frame(obj, settings, relative_basis):
         return remap_to_unit(custom, (scene['min_x'], scene['min_y'], scene['min_z']),
                              (scene['max_x'], scene['max_y'], scene['max_z']))
 
-    channels = [remap_to_unit(read_point_vectors(mesh.attributes["colPos"].data, count),
-                              (scene['min_x'], scene['min_y'], scene['min_z']),
+    mirror = np.array([-1.0 if mirrors_x(settings) else 1.0, 1.0, 1.0])
+    offsets = read_point_vectors(mesh.attributes["colPos"].data, count) * mirror
+    channels = [remap_to_unit(offsets, (scene['min_x'], scene['min_y'], scene['min_z']),
                               (scene['max_x'], scene['max_y'], scene['max_z']))]
     if settings.vat_normal_encoding != 'NONE':
         normals = read_point_vectors(mesh.vertex_normals, count)
         if relative_basis is not None:
             low, high = relative_normal_range(settings.image_format)
-            channels.append(remap_to_unit(normals - relative_basis, (low,) * 3, (high,) * 3))
+            channels.append(remap_to_unit((normals - relative_basis) * mirror, (low,) * 3, (high,) * 3))
         else:
-            channels.append(remap_to_unit(normals, (-1.0,) * 3, (1.0,) * 3))
+            channels.append(remap_to_unit(normals * mirror, (-1.0,) * 3, (1.0,) * 3))
     return np.column_stack(channels)
 
 def compute_shared_columns(obj, proxy_obj, frame_start, frame_end, settings):
