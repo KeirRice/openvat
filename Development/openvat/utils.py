@@ -509,12 +509,12 @@ def relative_normal_range(image_format):
     """Remap range for relative normals (offsets within -2..2) that stores a zero offset exactly.
 
     Static vertices encode zero, so it must land on a code rather than between two; the range
-    is widened by a fraction of a step on the positive side to put zero on code (levels - 1) / 2.
+    is widened slightly on the positive side to put zero at 127/255. PNG8 stores that exactly.
+    PNG16 ends within a half-float step of it (the VAT renders through a half-float buffer),
+    which still rounds to 127/255 when an engine imports it at 8 bits per channel (Unity does).
     """
     if image_format in QUANTIZE_LEVELS:
-        levels = QUANTIZE_LEVELS[image_format]
-        step = 2.0 / ((levels - 1) // 2)
-        return -2.0, -2.0 + levels * step
+        return -2.0, -2.0 + 2.0 * 255 / 127
     return -2.0, 2.0
 
 def read_point_vectors(collection, count):

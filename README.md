@@ -67,6 +67,7 @@ OpenVAT targets technical artists, shader developers, and studios aiming to brid
 - **None:** No normal data.
 - **Packed:** Normals stored in the same texture as position, as additional rows (doubles texture height).
 - **Separate:** Normals stored in a secondary texture.
+- **Relative Normals** (optional): each normal is stored as an offset from the exported mesh's own normal, so static vertices encode zero and can share a column (see **Share Identical Columns**). The engine shader must add the offset back: supported by the OpenVAT Unity package and the Blender preview. Unreal, Godot and Effect House examples decode absolute normals only, so leave it off for those.
 
 ### Transform Handling
 - Encode relative to object space or world space.
@@ -75,6 +76,7 @@ OpenVAT targets technical artists, shader developers, and studios aiming to brid
 - **Mesh Formats:** FBX, glTF (.glb or .gltf).
 - **Texture Formats:** PNG (8 or 16-bit) or OpenEXR (16-bit half or 32-bit full float).
 - **Includes:** UV mapping for VAT, optional mesh cleanup, optional proxy export.
+- **Share Identical Columns** (on by default): vertices whose encoded data is identical in every frame share one texture column, and the VAT is sized by column count. Equality is checked at the chosen image format's precision, so sharing is lossless, and no engine changes are needed. Meshes that are mostly static shrink the most, especially with Relative Normals or no normals.
 
 ## Interface Breakdown
 
@@ -82,12 +84,12 @@ OpenVAT targets technical artists, shader developers, and studios aiming to brid
 - Select encode target: `Active Object` or `Collection (combined)`
 - Choose encoding mode: `Standard (Position/Normal)` or `Custom Attributes (float[3])`
 - Define Proxy Method (Deformation Basis): `Start Frame`, `Current Frame`, or `Selected Object`
-- Transform space (`Object` or `World`), Normal Encoding, or scanned attribute names (if custom)
+- Transform space (`Object` or `World`), Normal Encoding and Relative Normals, or scanned attribute names (if custom)
 - Mesh settings: Strip Vertex Data, Create Normal-Safe Edges
 
 ### Output Panel
 - Set output directory
-- Choose image + mesh formats, Single Row mode, and absolute values (EXR32 only)
+- Choose image + mesh formats, Single Row mode, Share Identical Columns, and absolute values (EXR32 only)
 - View estimated resolution and vertex counts
 - Execute encoding
 
@@ -123,7 +125,7 @@ Given target `MyObject`, results are stored like:
 (`.exr` instead of `.png` when an EXR image format is selected.)
 
 ## Previewing
-Immediately after VAT creation, a new object (`MyObject_vat`) will be added to the `OpenVATPreview` collection as a copy of the proxy object with all modifiers stripped and the decoder modifier added. It is selected and active when encoding finishes. With Transform set to `World` it lines up with the original; with `Object` it sits at the world origin. Hide or move the original and scrub the timeline or play the scene to see the vertex-encoded animation play.
+Immediately after VAT creation, a new object (`MyObject_vat`) will be added to the `OpenVATPreview` collection as a copy of the proxy object with all modifiers stripped and the decoder modifier added. It is selected and active when encoding finishes. With Transform set to `World` it lines up with the original; with `Object` it sits at the world origin. Hide or move the original and scrub the timeline or play the scene to see the vertex-encoded animation play. In Blender versions that have the Set Mesh Normal geometry node, the preview also applies the encoded normals.
 
 ## Example Use Cases
 
