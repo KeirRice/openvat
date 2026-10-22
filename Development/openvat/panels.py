@@ -208,6 +208,11 @@ class OBJECT_PT_VAT_OUTPUT(bpy.types.Panel):
         row = layout.row()
         row.prop(settings, "use_single_row", toggle=True)
         row.prop(settings, "share_columns", toggle=True)
+        if settings.share_columns:
+            col = layout.column(align=True)
+            col.prop(settings, "share_position_tolerance")
+            if settings.encode_type == 'DEFAULT' and settings.vat_normal_encoding != 'NONE':
+                col.prop(settings, "share_normal_tolerance")
         if settings.image_format == 'EXR32':
             row = layout.row()
             row.prop(settings, "no_remap", text="Use Absolute Values", toggle=True)

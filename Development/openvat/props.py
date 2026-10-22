@@ -1,4 +1,5 @@
 import bpy
+import math
 from . import utils
 
 def make_dynamic_enum(idname):
@@ -201,8 +202,29 @@ class VATSettings(bpy.types.PropertyGroup):
 
     share_columns: bpy.props.BoolProperty(
         name="Share Identical Columns",
-        description="Vertices whose encoded data is identical in every frame share one texture column, shrinking the VAT. Lossless at the chosen image format and needs no engine changes",
+        description="Vertices whose encoded data matches in every frame share one texture column, shrinking the VAT. Needs no engine changes",
         default=True
+    )
+
+    share_position_tolerance: bpy.props.FloatProperty(
+        name="Position Tolerance",
+        description="Vertices share a column when their position offsets stay within this distance of each other in every frame. 0 shares only identical texels (lossless)",
+        default=0.0001,
+        min=0.0,
+        soft_max=0.01,
+        precision=5,
+        subtype='DISTANCE',
+        unit='LENGTH'
+    )
+
+    share_normal_tolerance: bpy.props.FloatProperty(
+        name="Normal Tolerance",
+        description="Vertices share a column when their normals stay within this angle of each other in every frame. 0 shares only identical texels (lossless)",
+        default=math.radians(0.1),
+        min=0.0,
+        soft_max=math.radians(5.0),
+        precision=3,
+        subtype='ANGLE'
     )
 
     use_single_row: bpy.props.BoolProperty(

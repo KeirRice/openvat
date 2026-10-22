@@ -585,8 +585,9 @@ def mirror_remap_x(filepath, key):
     entry["Min"][0], entry["Max"][0] = -entry["Max"][0], -entry["Min"][0]
     write_json(data, filepath)
 
-def read_evaluated_frame(obj, settings, relative_basis):
-    """One frame of the data the encoder writes for each vertex, remapped to 0-1 per channel"""
+def read_frame(obj, settings, relative_basis):
+    """One frame of what the encoder writes for each vertex: texels exactly as the image stores
+    them, plus the raw position offsets and normals (or normal offsets) for tolerance matching"""
     scene = bpy.context.scene
     depsgraph = bpy.context.evaluated_depsgraph_get()
     mesh = obj.evaluated_get(depsgraph).data
@@ -597,24 +598,67 @@ def read_evaluated_frame(obj, settings, relative_basis):
             read_point_floats(mesh, name) for name in
             (settings.custom_attr_1, settings.custom_attr_2, settings.custom_attr_3)
         ])
-        return remap_to_unit(custom, (scene['min_x'], scene['min_y'], scene['min_z']),
-                             (scene['max_x'], scene['max_y'], scene['max_z']))
+        texels = quantize_encoded(remap_to_unit(custom, (scene['min_x'], scene['min_y'], scene['min_z']),
+                                                (scene['max_x'], scene['max_y'], scene['max_z'])),
+                                  settings.image_format)
+        return texels, None, None
 
     mirror = np.array([-1.0 if mirrors_x(settings) else 1.0, 1.0, 1.0])
     offsets = read_point_vectors(mesh.attributes["colPos"].data, count) * mirror
-    channels = [remap_to_unit(offsets, (scene['min_x'], scene['min_y'], scene['min_z']),
-                              (scene['max_x'], scene['max_y'], scene['max_z']))]
+    texels = [quantize_encoded(remap_to_unit(offsets, (scene['min_x'], scene['min_y'], scene['min_z']),
+                                             (scene['max_x'], scene['max_y'], scene['max_z'])),
+                               settings.image_format)]
+    normals = None
     if settings.vat_normal_encoding != 'NONE':
         normals = read_point_vectors(mesh.vertex_normals, count)
         if relative_basis is not None:
             low, high = relative_normal_range(settings.image_format)
-            channels.append(remap_to_unit((normals - relative_basis) * mirror, (low,) * 3, (high,) * 3))
+            normals = normals - relative_basis
         else:
-            channels.append(remap_to_unit(normals * mirror, (-1.0,) * 3, (1.0,) * 3))
-    return np.column_stack(channels)
+            low, high = -1.0, 1.0
+        normals = normals * mirror
+        texels.append(quantize_encoded(remap_to_unit(normals, (low,) * 3, (high,) * 3), settings.image_format))
+    return np.column_stack(texels), offsets, normals
+
+def merge_within_tolerance(groups, positions, normals, position_tolerance, normal_tolerance):
+    """Merge exact groups whose data stays within the tolerances of a leader group in every frame.
+
+    positions and normals hold every frame (frames x vertices x 3). Each group is compared with
+    earlier leaders only, so a merged vertex is never further than the tolerance from the data it
+    is drawn with. A KD tree of mean offsets prunes candidates: two trajectories within the
+    tolerance in every frame are within it on average too. For small angles the length between
+    unit normals matches the angle in radians.
+    """
+    from mathutils import kdtree
+
+    num_groups = int(groups.max()) + 1
+    _, first = np.unique(groups, return_index=True)
+    group_positions = positions[:, first]
+    group_normals = normals[:, first] if normals is not None else None
+    means = group_positions.mean(axis=0)
+
+    tree = kdtree.KDTree(num_groups)
+    for g, mean in enumerate(means):
+        tree.insert(mean, g)
+    tree.balance()
+
+    leader = np.arange(num_groups)
+    for g in range(num_groups):
+        for _, candidate, _ in sorted(tree.find_range(means[g], max(position_tolerance, 1e-12)), key=lambda hit: hit[1]):
+            if candidate >= g or leader[candidate] != candidate:
+                continue
+            if np.linalg.norm(group_positions[:, g] - group_positions[:, candidate], axis=1).max() > position_tolerance:
+                continue
+            if group_normals is not None and np.linalg.norm(group_normals[:, g] - group_normals[:, candidate], axis=1).max() > normal_tolerance:
+                continue
+            leader[g] = candidate
+            break
+
+    _, merged = np.unique(leader, return_inverse=True)
+    return merged.reshape(-1)[groups]
 
 def compute_shared_columns(obj, proxy_obj, frame_start, frame_end, settings):
-    """Group vertices whose encoded texels match in every frame.
+    """Group vertices whose data matches in every frame, exactly or within the tolerances.
 
     Returns one group id per vertex and the group count. Each frame refines the grouping, so
     only one frame of data is held at a time, and the pass stops once every vertex is unique.
@@ -625,11 +669,16 @@ def compute_shared_columns(obj, proxy_obj, frame_start, frame_end, settings):
         proxy_mesh = proxy_obj.evaluated_get(depsgraph).data
         relative_basis = read_point_vectors(proxy_mesh.vertex_normals, len(proxy_mesh.vertices))
 
+    # Tolerance matching needs every frame of the raw data, so it is held in memory
+    use_tolerance = settings.encode_type == 'DEFAULT' and (
+        settings.share_position_tolerance > 0.0 or settings.share_normal_tolerance > 0.0)
+    positions, normals = [], []
+
     groups = None
     num_groups = 1
     for frame in range(frame_start, frame_end + 1):
         bpy.context.scene.frame_set(frame)
-        texels = quantize_encoded(read_evaluated_frame(obj, settings, relative_basis), settings.image_format)
+        texels, frame_offsets, frame_normals = read_frame(obj, settings, relative_basis)
         if groups is None:
             count = len(texels)
             groups = np.zeros(count, dtype=np.int64)
@@ -638,8 +687,17 @@ def compute_shared_columns(obj, proxy_obj, frame_start, frame_end, settings):
         _, groups = np.unique(np.column_stack((groups, texels)), axis=0, return_inverse=True)
         groups = groups.reshape(-1)
         num_groups = int(groups.max()) + 1
-        if num_groups == count:
+        if use_tolerance:
+            positions.append(frame_offsets.astype(np.float32))
+            if frame_normals is not None:
+                normals.append(frame_normals.astype(np.float32))
+        elif num_groups == count:
             break
+
+    if use_tolerance and num_groups > 1:
+        groups = merge_within_tolerance(groups, np.stack(positions), np.stack(normals) if normals else None,
+                                        settings.share_position_tolerance, settings.share_normal_tolerance)
+        num_groups = int(groups.max()) + 1
     return groups, num_groups
 
 def layout_shared_columns(groups, num_groups):

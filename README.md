@@ -76,7 +76,8 @@ OpenVAT targets technical artists, shader developers, and studios aiming to brid
 - **Mesh Formats:** FBX, glTF (.glb or .gltf).
 - **Texture Formats:** PNG (8 or 16-bit) or OpenEXR (16-bit half or 32-bit full float).
 - **Includes:** UV mapping for VAT, optional mesh cleanup, optional proxy export.
-- **Share Identical Columns** (on by default): vertices whose encoded data is identical in every frame share one texture column, and the VAT is sized by column count. Equality is checked at the chosen image format's precision, so sharing is lossless, and no engine changes are needed. Meshes that are mostly static shrink the most, especially with Relative Normals or no normals.
+- **Share Identical Columns** (on by default): vertices whose encoded data is identical in every frame share one texture column, and the VAT is sized by column count. No engine changes are needed. Meshes that are mostly static shrink the most, especially with Relative Normals or no normals.
+  - **Position Tolerance / Normal Tolerance** (defaults 0.1 mm and 0.1°): vertices also share a column when their motion stays within these of each other in every frame, which absorbs the float noise deformation leaves on parts that move together. Set both to 0 to share only identical texels (lossless).
 
 ## Interface Breakdown
 
