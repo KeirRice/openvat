@@ -1,6 +1,7 @@
 # OpenVAT Utility Functions
 
 import bpy
+import contextlib
 import json
 import math
 import numpy as np
@@ -228,6 +229,36 @@ def write_json(data, filepath):
 
     with open(filepath, 'w') as f:
         json.dump(data, f, indent=4, cls=CustomEncoder)
+
+def find_layer_collection(layer_collection, collection):
+    if layer_collection.collection == collection:
+        return layer_collection
+    for child in layer_collection.children:
+        found = find_layer_collection(child, collection)
+        if found:
+            return found
+    return None
+
+@contextlib.contextmanager
+def preview_collection_usable(context):
+    """Make OpenVATPreview visible and selectable while encoding, then restore the user's settings"""
+    collection = bpy.data.collections.get("OpenVATPreview")
+    layer = find_layer_collection(context.view_layer.layer_collection, collection) if collection else None
+    saved_collection = (collection.hide_select, collection.hide_viewport) if collection else None
+    saved_layer = (layer.exclude, layer.hide_viewport) if layer else None
+    if collection:
+        collection.hide_select = False
+        collection.hide_viewport = False
+    if layer:
+        layer.exclude = False
+        layer.hide_viewport = False
+    try:
+        yield
+    finally:
+        if collection:
+            collection.hide_select, collection.hide_viewport = saved_collection
+        if layer:
+            layer.exclude, layer.hide_viewport = saved_layer
 
 def apply_modifier(obj, modifier):
     depsgraph = bpy.context.evaluated_depsgraph_get()

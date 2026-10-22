@@ -25,6 +25,11 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
     bl_description = "Export a UV-Based Vertex Animation Texture, sidecar data and compatible model to the defined Export location"
 
     def execute(self, context):
+        # Encoding selects objects in OpenVATPreview, which fails or exports nothing while it is hidden
+        with utils.preview_collection_usable(context):
+            return self.encode(context)
+
+    def encode(self, context):
         settings = context.scene.vat_settings
         outDir = bpy.path.abspath(bpy.context.scene.vat_settings.vat_output_directory)
         blend_filepath = bpy.data.filepath

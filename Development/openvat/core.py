@@ -994,6 +994,9 @@ def export_vat_model(file_format='FBX', include_materials=False, include_tangent
         raise Exception("Active object must be a mesh")
 
     bpy.ops.mesh.customdata_custom_splitnormals_add()
+    # The exporters write selected objects only; an unselectable object would export an empty file
+    if not obj.select_get():
+        raise RuntimeError(f"{obj.name} is not selectable, so its model export would be empty")
 
     export_directory = bpy.path.abspath(bpy.context.scene.vat_settings.vat_output_directory)
     object_directory = os.path.join(export_directory, obj.name)
