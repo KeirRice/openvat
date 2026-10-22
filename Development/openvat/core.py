@@ -8,9 +8,10 @@ import os
 from . import utils
 
 # Rotation from Blender's Z-up frame into the FBX data frame for Unity space:
-# (x, y, z) -> (-x, z, y). Unity negates X on FBX import, so the asset lands in Unity as
-# (x, z, y): Blender's front view (looking along +Y) matches Unity's default view (along +Z).
-UNITY_SPACE_ROTATION = (math.pi / 2, 0.0, math.pi)
+# (x, y, z) -> (x, z, -y), the same frame Blender's FBX exporter writes with -Z forward and Y up.
+# Unity negates X on FBX import, so the asset lands as (-x, z, -y): exactly where a standard
+# Blender FBX export (Apply Transform, FBX All scaling) lands, so they line up in one LOD group.
+UNITY_SPACE_ROTATION = (-math.pi / 2, 0.0, 0.0)
 # Object rotation that cancels the FBX exporter's -Z forward / Y up root rotation, so the
 # Unity root imports with an identity rotation
 UNITY_SPACE_FBX_ROOT_ROTATION = (math.pi / 2, 0.0, 0.0)
