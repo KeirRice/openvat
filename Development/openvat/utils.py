@@ -230,6 +230,18 @@ def write_json(data, filepath):
     with open(filepath, 'w') as f:
         json.dump(data, f, indent=4, cls=CustomEncoder)
 
+def remove_previous_run(base_name):
+    """Remove working scenes and objects an earlier encode of this target left behind (Perform
+    Cleanup off, or a failed run). Otherwise this run's scenes get .001 names, and since outputs
+    are named after them, the new VAT lands beside a stale one under a different name"""
+    prefix = f"{base_name}_ovbake"
+    for scene in list(bpy.data.scenes):
+        if scene.name.startswith(prefix) and scene != bpy.context.scene:
+            bpy.data.scenes.remove(scene)
+    for obj in list(bpy.data.objects):
+        if obj.name.startswith(prefix):
+            bpy.data.objects.remove(obj)
+
 def find_layer_collection(layer_collection, collection):
     if layer_collection.collection == collection:
         return layer_collection

@@ -94,6 +94,7 @@ class OBJECT_OT_CalculateVATResolution(bpy.types.Operator):
                 collection_mode = True
                 collection_target = settings.vat_collection.name
 
+        utils.remove_previous_run(collection_target if collection_mode else context.view_layer.objects.active.name)
         core.create_geo_nodes_bake(use_collection=collection_mode, collection_name=collection_target)
         obj = context.view_layer.objects.active
         obj_name = obj.name
